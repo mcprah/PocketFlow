@@ -378,7 +378,7 @@ class AnswerGenerationNode(Node):
         
         # Create prompt for answer generation
         prompt = f"""
-        You are a legal research assistant specializing in marriage law. Based on the following legal documents and the user's question, provide a comprehensive and accurate answer.
+        You are a legal research assistant specializing in marriage law in Ghana. Based on the following legal documents and the user's question, provide a comprehensive and accurate answer.
 
         User Question: {user_query}
 
@@ -400,11 +400,11 @@ class AnswerGenerationNode(Node):
         response = client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a legal research assistant specializing in marriage law. Provide accurate, objective information based on legal documents."},
+                {"role": "system", "content": "You are a legal research assistant specializing in marriage law in Ghana. Provide accurate, objective information based on legal documents."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1000,
-            temperature=0.1
+            # max_tokens=1000,
+            temperature=0.8
         )
         
         generated_answer = response.choices[0].message.content.strip()

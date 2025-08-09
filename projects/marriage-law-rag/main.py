@@ -300,20 +300,67 @@ async def query_documents(request: QueryRequest):
         
         # Run online query flow
         start_time = datetime.now()
-        app.state.online_flow.run(shared)
+        await app.state.online_flow.run_async(shared)
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
         # Format response
         results = []
+        # print(shared.get("query_results", []))
         for result in shared.get("query_results", []):
+            # Extract and map document metadata
+            raw_metadata = result.get("document_metadata", {})
+            
+            # Handle string-encoded legal context
+            legal_context_data = result.get("legal_context", {})
+            if isinstance(legal_context_data, str):
+                try:
+                    legal_context_data = json.loads(legal_context_data)
+                except:
+                    legal_context_data = {}
+            
+            # Map document metadata to expected structure
+            document_metadata = {
+                "document_id": result.get("document_id", raw_metadata.get("document_id", "unknown")),
+                "title": raw_metadata.get("title"),
+                "doc_type": raw_metadata.get("doc_type") or raw_metadata.get("document_type", "unknown"),
+                "jurisdiction": raw_metadata.get("jurisdiction", "unknown"),
+                "authority": raw_metadata.get("authority"),
+                "authority_level": raw_metadata.get("authority_level"),
+                "date_issued": raw_metadata.get("date_issued"),
+                "file_path": raw_metadata.get("file_path")
+            }
+            
+            # Map legal context to expected structure
+            legal_context = {
+                "section": legal_context_data.get("section"),
+                "legal_concepts": legal_context_data.get("legal_concepts", []),
+                "citations": legal_context_data.get("citations", []),
+                "case_number": legal_context_data.get("case_number"),
+                "court": legal_context_data.get("court")
+            }
+            
             results.append(QueryResult(
-                chunk_id=result.get("chunk_id"),
-                document_id=result.get("document_id"),
-                text=result.get("text"),
+                chunk_id=result.get("chunk_id", "unknown"),
+                document_id=result.get("document_id", "unknown"),
+                text=result.get("text", ""),
                 similarity_score=result.get("similarity_score", 0.0),
-                document_metadata=result.get("document_metadata", {}),
-                legal_context=result.get("legal_context", {})
+                document_metadata=document_metadata,
+                legal_context=legal_context
             ))
+        
+        # Format citations as strings
+        raw_citations = shared.get("citations", [])
+        formatted_citations = []
+        for citation in raw_citations:
+            if isinstance(citation, dict):
+                # Convert citation dict to formatted string
+                doc_id = citation.get("document_id", "Unknown")
+                chunk_id = citation.get("chunk_id", "Unknown")
+                score = citation.get("similarity_score", 0.0)
+                formatted_citations.append(f"{doc_id}/{chunk_id} (similarity: {score:.2f})")
+            else:
+                # Already a string
+                formatted_citations.append(str(citation))
         
         return QueryResponse(
             query=request.question,
@@ -321,7 +368,7 @@ async def query_documents(request: QueryRequest):
             generated_answer=shared.get("generated_answer", ""),
             confidence_score=shared.get("confidence_score", 0.0),
             processing_time_ms=int(processing_time),
-            citations=shared.get("citations", [])
+            citations=formatted_citations
         )
         
     except Exception as e:
