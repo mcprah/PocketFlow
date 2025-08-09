@@ -26,6 +26,10 @@ openai_client = None
 def get_openai_client():
     global openai_client
     if openai_client is None:
+        # Load environment variables
+        from dotenv import load_dotenv
+        load_dotenv()
+        
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key or api_key == "your_openai_api_key_here":
             raise ValueError("Please set a valid OPENAI_API_KEY in your .env file")
@@ -272,7 +276,8 @@ class QueryEmbeddingNode(Node):
         if not query_text:
             return {"query_embedding": None}
         
-        response = openai_client.embeddings.create(
+        client = get_openai_client()
+        response = client.embeddings.create(
             model=self.model,
             input=[query_text]
         )
@@ -391,7 +396,8 @@ class AnswerGenerationNode(Node):
         Answer:
         """
         
-        response = openai_client.chat.completions.create(
+        client = get_openai_client()
+        response = client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": "You are a legal research assistant specializing in marriage law. Provide accurate, objective information based on legal documents."},
@@ -436,7 +442,10 @@ def create_offline_indexing_flow() -> AsyncFlow:
     # Create flow connections
     extract_node >> chunk_node >> embed_node >> store_node
     
-    # Handle extraction failures
+    # Handle conditional transitions
+    extract_node - "chunk" >> chunk_node  # Successful extraction goes to chunking
+    chunk_node - "embed" >> embed_node    # Chunking goes to embedding
+    embed_node - "store" >> store_node    # Embedding goes to storage
     extract_node - "failed" >> store_node  # Still try to store what we have
     
     # Create and return flow
@@ -457,8 +466,11 @@ def create_online_query_flow() -> AsyncFlow:
     # Create flow connections
     query_embed_node >> search_node >> generate_node
     
-    # Handle no results case
-    search_node - "no_results" >> generate_node  # Generate "no results" answer
+    # Handle conditional transitions
+    query_embed_node - "search" >> search_node    # Successful embedding goes to search
+    search_node - "generate" >> generate_node     # Search results go to generation
+    search_node - "no_results" >> generate_node   # Generate "no results" answer
+    query_embed_node - "failed" >> generate_node  # Direct to generation if embedding fails
     
     # Create and return flow  
     return AsyncFlow(start=query_embed_node)

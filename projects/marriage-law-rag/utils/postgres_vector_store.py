@@ -202,8 +202,8 @@ class PostgresVectorStore:
         self,
         query_embedding: List[float],
         limit: int = 10,
-        jurisdiction_filter: Optional[str] = None,
-        doc_type_filter: Optional[str] = None,
+        jurisdiction_filter: Optional[List[str]] = None,
+        doc_type_filter: Optional[List[str]] = None,
         authority_level_min: Optional[int] = None,
         similarity_threshold: float = 0.1
     ) -> List[Dict[str, Any]]:
@@ -222,14 +222,38 @@ class PostgresVectorStore:
             param_count = 2
             
             if jurisdiction_filter:
-                param_count += 1
-                where_conditions.append(f"d.jurisdiction = ${param_count}")
-                params.append(jurisdiction_filter)
+                if isinstance(jurisdiction_filter, list):
+                    if len(jurisdiction_filter) == 1:
+                        param_count += 1
+                        where_conditions.append(f"d.jurisdiction = ${param_count}")
+                        params.append(jurisdiction_filter[0])
+                    else:
+                        param_count += 1
+                        placeholders = ','.join([f'${param_count + i}' for i in range(len(jurisdiction_filter))])
+                        where_conditions.append(f"d.jurisdiction = ANY(ARRAY[{placeholders}])")
+                        params.extend(jurisdiction_filter)
+                        param_count += len(jurisdiction_filter) - 1
+                else:
+                    param_count += 1
+                    where_conditions.append(f"d.jurisdiction = ${param_count}")
+                    params.append(jurisdiction_filter)
             
             if doc_type_filter:
-                param_count += 1
-                where_conditions.append(f"d.doc_type = ${param_count}")
-                params.append(doc_type_filter)
+                if isinstance(doc_type_filter, list):
+                    if len(doc_type_filter) == 1:
+                        param_count += 1
+                        where_conditions.append(f"d.doc_type = ${param_count}")
+                        params.append(doc_type_filter[0])
+                    else:
+                        param_count += 1
+                        placeholders = ','.join([f'${param_count + i}' for i in range(len(doc_type_filter))])
+                        where_conditions.append(f"d.doc_type = ANY(ARRAY[{placeholders}])")
+                        params.extend(doc_type_filter)
+                        param_count += len(doc_type_filter) - 1
+                else:
+                    param_count += 1
+                    where_conditions.append(f"d.doc_type = ${param_count}")
+                    params.append(doc_type_filter)
             
             if authority_level_min is not None:
                 param_count += 1
@@ -244,7 +268,7 @@ class PostgresVectorStore:
                     c.document_id,
                     c.text,
                     c.chunk_index,
-                    1 - (c.embedding <=> $1::vector) as similarity_score,
+                    1 - (c.embedding <=> $1) as similarity_score,
                     d.doc_type,
                     d.jurisdiction,
                     d.authority,
@@ -254,8 +278,8 @@ class PostgresVectorStore:
                 FROM document_chunks c
                 JOIN documents d ON c.document_id = d.document_id
                 WHERE {where_clause}
-                    AND (1 - (c.embedding <=> $1::vector)) > {similarity_threshold}
-                ORDER BY c.embedding <=> $1::vector
+                    AND (1 - (c.embedding <=> $1)) > {similarity_threshold}
+                ORDER BY c.embedding <=> $1
                 LIMIT $2;
             """
             
