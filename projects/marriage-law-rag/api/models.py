@@ -212,5 +212,5 @@ class SystemConfig(BaseModel):
     max_query_length: int = 500
     max_results_per_query: int = 20
     ocr_enabled: bool = True
-    embedding_model: str = "text-embedding-ada-002"
+    embedding_model: str = "text-embedding-3-small-ada-002"
     vector_dimensions: int = 1536

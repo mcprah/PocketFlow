@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
     
     embedding_model: str = Field(
-        default="text-embedding-ada-002",
+        default="text-embedding-3-small-ada-002",
         env="EMBEDDING_MODEL",
         description="OpenAI embedding model to use"
     )

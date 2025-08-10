@@ -156,7 +156,7 @@ class EmbeddingService:
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
     
-    def get_embedding(self, text: str, model: str = "text-embedding-ada-002") -> List[float]:
+    def get_embedding(self, text: str, model: str = "text-embedding-3-small-ada-002") -> List[float]:
         """Get embedding for a text chunk"""
         response = self.client.embeddings.create(
             model=model,
