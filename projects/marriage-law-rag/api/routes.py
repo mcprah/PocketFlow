@@ -308,8 +308,94 @@ def setup_routes(app):
             logger.error(f"Failed to get citations: {e}")
             raise HTTPException(status_code=500, detail="Failed to retrieve citations")
     
+    # Bulk processing routes
+    bulk_router = APIRouter(prefix="/bulk", tags=["bulk_processing"])
+    
+    from handlers.bulk_handler import (
+        handle_bulk_scan,
+        handle_bulk_process,
+        handle_bulk_retry,
+        handle_bulk_stats,
+        handle_estimate_processing
+    )
+    
+    @bulk_router.post("/scan")
+    async def scan_folder(
+        folder_path: str = Query(..., description="Path to folder containing documents"),
+        max_files: Optional[int] = Query(None, description="Maximum number of files to scan")
+    ):
+        """Scan folder structure and discover documents for bulk processing"""
+        return await handle_bulk_scan(folder_path, max_files)
+    
+    @bulk_router.post("/process")
+    async def start_bulk_processing(
+        folder_path: str = Query(..., description="Path to folder containing documents"),
+        max_files: Optional[int] = Query(None, description="Maximum number of files to process"),
+        batch_size: int = Query(50, ge=1, le=200, description="Documents per processing batch"),
+        max_workers_extract: int = Query(4, ge=1, le=16, description="Max workers for extraction"),
+        max_workers_chunk: int = Query(8, ge=1, le=32, description="Max workers for chunking"),
+        max_workers_embed: int = Query(2, ge=1, le=8, description="Max workers for embedding"),
+        max_workers_store: int = Query(4, ge=1, le=16, description="Max workers for storage")
+    ):
+        """Start bulk processing of documents in a folder"""
+        max_workers = {
+            "extract": max_workers_extract,
+            "chunk": max_workers_chunk,
+            "embed": max_workers_embed,
+            "store": max_workers_store
+        }
+        
+        return await handle_bulk_process(
+            folder_path=folder_path,
+            app_state=app.state,
+            max_files=max_files,
+            batch_size=batch_size,
+            max_workers=max_workers
+        )
+    
+    @bulk_router.post("/retry")
+    async def retry_failed_processing(
+        operation_id: str = Query(..., description="Original operation ID"),
+        failed_documents: List[Dict] = None,
+        max_workers_extract: int = Query(2, ge=1, le=8, description="Max workers for extraction"),
+        max_workers_chunk: int = Query(4, ge=1, le=16, description="Max workers for chunking"),
+        max_workers_embed: int = Query(1, ge=1, le=4, description="Max workers for embedding"),
+        max_workers_store: int = Query(2, ge=1, le=8, description="Max workers for storage")
+    ):
+        """Retry processing of previously failed documents"""
+        if not failed_documents:
+            raise HTTPException(status_code=400, detail="failed_documents is required")
+        
+        max_workers = {
+            "extract": max_workers_extract,
+            "chunk": max_workers_chunk,
+            "embed": max_workers_embed,
+            "store": max_workers_store
+        }
+        
+        return await handle_bulk_retry(
+            operation_id=operation_id,
+            failed_documents=failed_documents,
+            app_state=app.state,
+            max_workers=max_workers
+        )
+    
+    @bulk_router.get("/stats")
+    async def get_bulk_processing_stats():
+        """Get bulk processing statistics from the database"""
+        return await handle_bulk_stats(app.state)
+    
+    @bulk_router.get("/estimate")
+    async def estimate_processing_time(
+        folder_path: str = Query(..., description="Path to folder containing documents"),
+        max_files: Optional[int] = Query(None, description="Maximum number of files to analyze")
+    ):
+        """Estimate processing time and resource requirements"""
+        return await handle_estimate_processing(folder_path, max_files)
+    
     # Include routers in the main app
     app.include_router(documents_router)
     app.include_router(query_router)
     app.include_router(admin_router)
     app.include_router(legal_router)
+    app.include_router(bulk_router)

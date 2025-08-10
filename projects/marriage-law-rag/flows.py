@@ -8,7 +8,7 @@ import os
 # Add the parent directory to Python path to access PocketFlow
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from pocketflow import AsyncFlow
+from pocketflow import AsyncFlow, BatchFlow, BatchNode
 from nodes import (
     DocumentExtractionNode,
     DocumentChunkingNode,
@@ -67,3 +67,56 @@ def create_online_query_flow() -> AsyncFlow:
     
     # Create and return flow  
     return AsyncFlow(start=query_embed_node)
+
+
+def create_bulk_indexing_flow(max_workers: dict = None) -> BatchFlow:
+    """
+    Create the bulk document indexing flow for processing large document collections.
+    Uses BatchFlow and BatchNode for parallel processing with configurable worker limits.
+    
+    Args:
+        max_workers: Dictionary specifying worker limits for each stage
+                    e.g., {"extract": 4, "chunk": 8, "embed": 2, "store": 4}
+    
+    Returns:
+        BatchFlow configured for bulk document processing
+    """
+    
+    # Default worker configuration optimized for typical hardware
+    if max_workers is None:
+        max_workers = {
+            "extract": 4,    # CPU intensive PDF extraction
+            "chunk": 8,      # Fast text processing
+            "embed": 2,      # Limited by OpenAI API rate limits  
+            "store": 4       # Database connection pool size
+        }
+    
+    # Create batch nodes with worker limits
+    extract_batch = BatchNode(
+        DocumentExtractionNode(), 
+        max_workers=max_workers.get("extract", 4)
+    )
+    chunk_batch = BatchNode(
+        DocumentChunkingNode(), 
+        max_workers=max_workers.get("chunk", 8)
+    )
+    embed_batch = BatchNode(
+        EmbeddingNode(), 
+        max_workers=max_workers.get("embed", 2)
+    )
+    store_batch = BatchNode(
+        VectorStoreNode(), 
+        max_workers=max_workers.get("store", 4)
+    )
+    
+    # Create flow connections - same pattern as single document flow
+    extract_batch >> chunk_batch >> embed_batch >> store_batch
+    
+    # Handle conditional transitions for batch processing
+    extract_batch - "chunk" >> chunk_batch      # Successful extractions go to chunking
+    chunk_batch - "embed" >> embed_batch        # Chunked documents go to embedding
+    embed_batch - "store" >> store_batch        # Embedded chunks go to storage
+    extract_batch - "failed" >> store_batch     # Still try to store partially processed docs
+    
+    # Create and return batch flow
+    return BatchFlow(start=extract_batch)

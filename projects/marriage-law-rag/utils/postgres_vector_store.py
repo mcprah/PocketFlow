@@ -198,6 +198,210 @@ class PostgresVectorStore:
             
             return chunk_id
     
+    async def bulk_store_chunks(self, chunks: List[Dict[str, Any]], batch_size: int = 1000) -> List[str]:
+        """
+        Store multiple chunks in batches for improved performance.
+        
+        Args:
+            chunks: List of chunk data dictionaries
+            batch_size: Number of chunks to insert per batch
+            
+        Returns:
+            List of chunk IDs that were successfully stored
+        """
+        if not chunks:
+            return []
+            
+        stored_chunk_ids = []
+        total_chunks = len(chunks)
+        
+        logger.info(f"Starting bulk storage of {total_chunks} chunks in batches of {batch_size}")
+        
+        async with self.pool.acquire() as conn:
+            # Start transaction for better performance
+            async with conn.transaction():
+                # Process chunks in batches
+                for i in range(0, total_chunks, batch_size):
+                    batch = chunks[i:i + batch_size]
+                    batch_chunk_ids = []
+                    
+                    # Prepare batch data
+                    batch_values = []
+                    for chunk_data in batch:
+                        chunk_id = chunk_data.get("chunk_id", str(uuid.uuid4()))
+                        batch_chunk_ids.append(chunk_id)
+                        
+                        # Process embedding
+                        embedding = chunk_data.get("embedding")
+                        if embedding:
+                            if isinstance(embedding, np.ndarray):
+                                embedding = embedding.tolist()
+                            embedding_vector = f"[{','.join(map(str, embedding))}]"
+                        else:
+                            embedding_vector = None
+                        
+                        batch_values.append((
+                            chunk_id,
+                            chunk_data["document_id"],
+                            chunk_data.get("chunk_index", 0),
+                            chunk_data["text"],
+                            embedding_vector
+                        ))
+                    
+                    try:
+                        # Execute batch insert using executemany for better performance
+                        await conn.executemany("""
+                            INSERT INTO document_chunks (chunk_id, document_id, chunk_index, text, embedding)
+                            VALUES ($1, $2, $3, $4, $5)
+                            ON CONFLICT (chunk_id) DO UPDATE SET
+                                text = EXCLUDED.text,
+                                embedding = EXCLUDED.embedding;
+                        """, batch_values)
+                        
+                        stored_chunk_ids.extend(batch_chunk_ids)
+                        logger.debug(f"Stored batch {i//batch_size + 1}/{(total_chunks + batch_size - 1)//batch_size}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to store chunk batch {i//batch_size + 1}: {e}")
+                        # Continue with next batch instead of failing completely
+                        continue
+        
+        logger.info(f"Bulk storage completed: {len(stored_chunk_ids)}/{total_chunks} chunks stored")
+        return stored_chunk_ids
+    
+    async def bulk_store_documents(self, documents: List[Dict[str, Any]], batch_size: int = 100) -> List[str]:
+        """
+        Store multiple documents in batches for improved performance.
+        
+        Args:
+            documents: List of document data dictionaries
+            batch_size: Number of documents to insert per batch
+            
+        Returns:
+            List of document IDs that were successfully stored
+        """
+        if not documents:
+            return []
+            
+        stored_document_ids = []
+        total_docs = len(documents)
+        
+        logger.info(f"Starting bulk storage of {total_docs} documents in batches of {batch_size}")
+        
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                for i in range(0, total_docs, batch_size):
+                    batch = documents[i:i + batch_size]
+                    batch_document_ids = []
+                    batch_values = []
+                    
+                    for document_data in batch:
+                        document_id = document_data.get("document_id", str(uuid.uuid4()))
+                        batch_document_ids.append(document_id)
+                        
+                        # Extract and process metadata
+                        legal_metadata = document_data.get("legal_metadata", {})
+                        date_issued = None
+                        
+                        if legal_metadata.get("date_issued"):
+                            try:
+                                from dateutil.parser import parse
+                                date_issued = parse(legal_metadata["date_issued"]).date()
+                            except:
+                                date_issued = None
+                        
+                        batch_values.append((
+                            document_id,
+                            document_data.get("original_path"),
+                            document_data.get("doc_type", "unknown"),
+                            legal_metadata.get("jurisdiction"),
+                            legal_metadata.get("authority"),
+                            legal_metadata.get("authority_level"),
+                            date_issued,
+                            json.dumps(document_data.get("extraction_metadata", {})),
+                            json.dumps(legal_metadata),
+                            json.dumps(document_data.get("validation", {})),
+                            document_data.get("text", "")
+                        ))
+                    
+                    try:
+                        await conn.executemany("""
+                            INSERT INTO documents (
+                                document_id, original_path, doc_type, jurisdiction, authority,
+                                authority_level, date_issued, extraction_metadata, legal_metadata,
+                                validation_metadata, full_text
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                            ON CONFLICT (document_id) DO UPDATE SET
+                                doc_type = EXCLUDED.doc_type,
+                                jurisdiction = EXCLUDED.jurisdiction,
+                                authority = EXCLUDED.authority,
+                                authority_level = EXCLUDED.authority_level,
+                                date_issued = EXCLUDED.date_issued,
+                                extraction_metadata = EXCLUDED.extraction_metadata,
+                                legal_metadata = EXCLUDED.legal_metadata,
+                                validation_metadata = EXCLUDED.validation_metadata,
+                                full_text = EXCLUDED.full_text;
+                        """, batch_values)
+                        
+                        stored_document_ids.extend(batch_document_ids)
+                        logger.debug(f"Stored document batch {i//batch_size + 1}/{(total_docs + batch_size - 1)//batch_size}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to store document batch {i//batch_size + 1}: {e}")
+                        continue
+        
+        logger.info(f"Bulk document storage completed: {len(stored_document_ids)}/{total_docs} documents stored")
+        return stored_document_ids
+    
+    async def get_bulk_processing_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about stored documents and chunks for bulk processing monitoring.
+        
+        Returns:
+            Dictionary with database statistics
+        """
+        async with self.pool.acquire() as conn:
+            # Get document counts by type and jurisdiction
+            doc_stats = await conn.fetch("""
+                SELECT 
+                    doc_type,
+                    jurisdiction,
+                    COUNT(*) as doc_count,
+                    AVG(CASE WHEN extraction_metadata->>'chunk_count' IS NOT NULL 
+                        THEN (extraction_metadata->>'chunk_count')::int 
+                        ELSE 0 END) as avg_chunks_per_doc
+                FROM documents 
+                GROUP BY doc_type, jurisdiction
+                ORDER BY doc_count DESC;
+            """)
+            
+            # Get chunk statistics
+            chunk_stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_chunks,
+                    COUNT(CASE WHEN embedding IS NOT NULL THEN 1 END) as embedded_chunks,
+                    AVG(LENGTH(text)) as avg_chunk_length
+                FROM document_chunks;
+            """)
+            
+            # Get recent processing activity
+            recent_activity = await conn.fetch("""
+                SELECT 
+                    DATE(created_at) as date,
+                    COUNT(*) as documents_added
+                FROM documents 
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY DATE(created_at)
+                ORDER BY date DESC;
+            """)
+            
+            return {
+                "document_stats": [dict(row) for row in doc_stats],
+                "chunk_stats": dict(chunk_stats) if chunk_stats else {},
+                "recent_activity": [dict(row) for row in recent_activity],
+                "last_updated": datetime.now().isoformat()
+            }
+    
     async def similarity_search(
         self,
         query_embedding: List[float],
